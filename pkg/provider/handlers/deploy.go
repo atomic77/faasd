@@ -24,6 +24,8 @@ import (
 	"github.com/pkg/errors"
 )
 
+const annotationLabelPrefix = "com.openfaas.annotations."
+
 func MakeDeployHandler(client *containerd.Client, cni gocni.CNI, secretMountPath string, alwaysPull bool) func(w http.ResponseWriter, r *http.Request) {
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +100,8 @@ func deploy(ctx context.Context, req types.FunctionDeployment, client *container
 
 	name := req.Service
 
+	labels, err := buildLabels(&req)
+	
 	container, err := client.NewContainer(
 		ctx,
 		name,
@@ -108,7 +112,7 @@ func deploy(ctx context.Context, req types.FunctionDeployment, client *container
 			oci.WithCapabilities([]string{"CAP_NET_RAW"}),
 			oci.WithMounts(mounts),
 			oci.WithEnv(envs)),
-		containerd.WithContainerLabels(*req.Labels),
+		containerd.WithContainerLabels(labels),
 	)
 
 	if err != nil {
@@ -117,6 +121,31 @@ func deploy(ctx context.Context, req types.FunctionDeployment, client *container
 
 	return createTask(ctx, client, container, cni)
 
+}
+
+func buildLabels(request *types.FunctionDeployment) (map[string]string, error) {
+	// Adapted from faas-swarm/handlers/deploy.go:buildLabels
+	labels := map[string]string{}
+	
+	if request.Labels != nil {
+		for k, v := range *request.Labels {
+			labels[k] = v
+		}
+	}
+
+	if request.Annotations != nil {
+		for k, v := range *request.Annotations {
+			key := fmt.Sprintf("%s%s", annotationLabelPrefix, k)
+			if _, ok := labels[key]; !ok {
+				labels[key] = v
+			} else {
+				return nil, errors.New(fmt.Sprintf("Keys %s can not be used as a labels as is clashes with annotations", k))
+			}
+		}
+	}
+
+	//log.Printf("Built %d labels in total", len(labels))
+	return labels, nil
 }
 
 func createTask(ctx context.Context, client *containerd.Client, container containerd.Container, cni gocni.CNI) error {
